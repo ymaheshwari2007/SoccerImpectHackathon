@@ -84,6 +84,18 @@ pip install -r requirements.txt
 - **R:** tidyverse, igraph
 - Any language is acceptable as long as your work is reproducible
 
+## Recommended Project Structure
+
+your-team-name/
+├── notebooks/          # Jupyter notebooks for exploration
+├── src/               # Python scripts/modules
+├── figures/           # Generated plots and visualizations
+├── slides/            # Your presentation deck
+├── data/              # Processed data (not raw IMPECT data)
+├── README.md          # Describe your approach
+├── requirements.txt   # Your dependencies
+└── LICENSE            # Open-source license
+
 ## Resources
 
 - [Kloppy Documentation](https://kloppy.pysport.org/)
@@ -107,6 +119,18 @@ pip install -r requirements.txt
 - Results & insight (15 pts)
 - Communication & visualization (15 pts)
 - Reproducibility & ethics (15 pts)
+
+## Submission Checklist
+
+Before submitting, ensure you have:
+- [ ] Chosen one prompt (A or B)
+- [ ] Created slide deck (PDF, max 8 slides)
+- [ ] Pushed code to GitHub with clear README
+- [ ] Included environment.yml or requirements.txt
+- [ ] Added open-source license (MIT or Apache 2.0)
+- [ ] Documented any AI tool usage
+- [ ] Named files: `TeamName_Hackathon2026.pdf`
+- [ ] Tested that code runs from a fresh environment
 
 ## Contact
 
