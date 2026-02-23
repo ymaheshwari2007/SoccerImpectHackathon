@@ -68,3 +68,6 @@ htmlcov/
 *.tmp
 *.bak
 *~
+
+# Claude Code local files
+.claude/
