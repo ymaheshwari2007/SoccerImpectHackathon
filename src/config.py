@@ -111,9 +111,9 @@ class SquadConfig:
         "Attacker", "Midfielder", "Defender", "Goalkeeper",
     ])
 
-    # 4-2-3-1 expressed as broad groups (3 ATK + 4 MID + 3 DEF + 1 GK = 11)
+    # 4-3-3 expressed as broad groups (3 ATK + 3 MID + 4 DEF + 1 GK = 11)
     formation: dict[str, int] = field(default_factory=lambda: {
-        "Attacker": 3, "Midfielder": 4, "Defender": 3, "Goalkeeper": 1,
+        "Attacker": 3, "Midfielder": 3, "Defender": 4, "Goalkeeper": 1,
     })
 
     # Manual position fixes for players missing starting_position in the data
@@ -130,12 +130,46 @@ class SquadConfig:
         "Daniel Peretz": "GK", "Joshua Zirkzee": "ST",
         "Eric Dier": "CB", "Raphael Guerreiro": "LWB",
         "Sacha Boey": "RWB", "Noussair Mazraoui": "RWB",
+        "Manuel Neuer": "GK", "Joshua Kimmich": "CDM",
     })
 
     @property
     def code_to_group(self) -> dict[str, str]:
         """Reverse lookup: position code → group name (e.g. 'ST' → 'Attacker')."""
         return {code: grp for grp, codes in self.position_groups.items() for code in codes}
+
+
+@dataclass(frozen=True)
+class IndividualStatsConfig:
+    """Controls how much individual skill stats and appearance count affect selection.
+
+    The final diagonal becomes: GAT_avg + beta * PSI + gamma * appearance_bonus
+    where PSI = position-specific skill index (z-score normalised stats weighted
+    by what matters for each role).
+
+    beta and gamma are intentionally small — synergy/progression is still king,
+    these just make sure genuinely skilled players don't get overlooked.
+    """
+    beta: float = 0.50           # ~30% relative weight for individual stats
+    gamma: float = 0.17          # ~10% relative weight for appearances
+    min_appearances: int = 150   # need this many plays to qualify for stats
+
+    # Position-specific stat weights — which stats matter for which role
+    attacker_weights: dict = field(default_factory=lambda: {
+        "goals": 0.40, "shots_on_target": 0.25, "total_shots": 0.10,
+        "successful_passes": 0.10, "successful_duels": 0.15,
+    })
+    midfielder_weights: dict = field(default_factory=lambda: {
+        "successful_passes": 0.20, "key_passes": 0.30, "interceptions": 0.15,
+        "successful_duels": 0.20, "recoveries": 0.15,
+    })
+    defender_weights: dict = field(default_factory=lambda: {
+        "interceptions": 0.25, "clearances": 0.20, "blocks": 0.20,
+        "successful_duels": 0.20, "recoveries": 0.15,
+    })
+    goalkeeper_weights: dict = field(default_factory=lambda: {
+        "saves": 0.80, "successful_passes": 0.20,
+    })
 
 
 @dataclass(frozen=True)
@@ -154,3 +188,4 @@ class PipelineConfig:
     graph: GraphConfig = field(default_factory=GraphConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     squad: SquadConfig = field(default_factory=SquadConfig)
+    stats: IndividualStatsConfig = field(default_factory=IndividualStatsConfig)

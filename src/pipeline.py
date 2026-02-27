@@ -107,7 +107,9 @@ def run_pipeline(
         print("STAGE 6: Building interaction matrix")
         print("=" * 70)
 
-    interaction = build_interaction_matrix(accumulator, config.squad.min_appearances)
+    interaction = build_interaction_matrix(
+        accumulator, config.squad.min_appearances, config.stats,
+    )
     if verbose:
         n = len(interaction.player_ids)
         print(f"  Qualified players (>= {config.squad.min_appearances} apps): {n}")

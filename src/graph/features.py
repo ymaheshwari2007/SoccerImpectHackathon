@@ -187,4 +187,19 @@ def build_graph(
     g.team_id = str(pc.iloc[0]["team_id"])
     g.period_id = int(pc.iloc[0]["period_id"])
     g.t_start = float(pc.iloc[0]["timestamp_sec"])
+
+    # Raw event info per node — used to count goals, tackles, interceptions etc.
+    # We store this separately from the encoded node features because the GAT
+    # only sees numbers, but the stat tracker needs the original strings.
+    g.event_data = [
+        {
+            "player_id": str(r["player_id"]),
+            "event_type": str(r["event_type"]),
+            "result": str(r["result"]),
+            "success": bool(r["success"]),
+            "end_x": float(r["end_coordinates_x"]),
+            "goalkeeper_type": str(r.get("goalkeeper_type", "NONE")),
+        }
+        for _, r in pc.iterrows()
+    ]
     return g
