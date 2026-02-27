@@ -18,7 +18,7 @@ EPOCHS          = 50
 MIN_APPEARANCES = 150
 
 # Formation — must add up to 10 (+ 1 GK = 11)
-ATTACKERS   = 5
+ATTACKERS   = 3
 MIDFIELDERS = 1
 DEFENDERS   = 4
 # ─────────────────────────────────────────────────────────────────────
