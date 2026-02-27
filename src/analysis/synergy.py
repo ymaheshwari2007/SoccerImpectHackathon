@@ -116,8 +116,25 @@ def accumulate_match_synergy(
                         acc.player_stats[pid]["successful_passes"] += 1
                     if success and ev["end_x"] > 35.0:
                         acc.player_stats[pid]["key_passes"] += 1
-                elif etype == "DUEL" and result == "WON":
-                    acc.player_stats[pid]["successful_duels"] += 1
+                    # Progressive pass: moves ball ≥10m toward opponent goal
+                    start_x = ev.get("coord_x", 0.0) or 0.0
+                    end_x = ev.get("end_x", 0.0) or 0.0
+                    if success and (end_x - start_x) >= 10.0:
+                        acc.player_stats[pid]["progressive_passes"] += 1
+                elif etype == "CARRY":
+                    acc.player_stats[pid]["carries"] += 1
+                    # Progressive carry: moves ball ≥5m toward opponent goal
+                    start_x = ev.get("coord_x", 0.0) or 0.0
+                    end_x = ev.get("end_x", 0.0) or 0.0
+                    if (end_x - start_x) >= 5.0:
+                        acc.player_stats[pid]["progressive_carries"] += 1
+                    # Carry into final third (x > 17.5 in secondspectrum = last third)
+                    if start_x <= 17.5 and end_x > 17.5:
+                        acc.player_stats[pid]["carries_into_final_third"] += 1
+                elif etype == "DUEL":
+                    if result == "WON":
+                        acc.player_stats[pid]["successful_duels"] += 1
+                    acc.player_stats[pid]["total_duels"] += 1
                 elif etype == "INTERCEPTION":
                     acc.player_stats[pid]["interceptions"] += 1
                 elif etype == "CLEARANCE":
@@ -205,9 +222,14 @@ def compute_psi(
     for w in weight_map.values():
         all_stat_names.update(w.keys())
 
-    # Build raw stat vectors: {stat_name: [value_for_player_0, value_for_player_1, ...]}
-    raw = {s: np.array([float(acc.player_stats[pid].get(s, 0)) for pid in qualified])
-           for s in all_stat_names}
+    # Build per-appearance rate vectors (not raw counts — a player with 50 apps
+    # and 14 progressive carries is better than 249 apps and 44 carries)
+    raw = {}
+    for s in all_stat_names:
+        raw[s] = np.array([
+            float(acc.player_stats[pid].get(s, 0)) / max(acc.player_appearances.get(pid, 1), 1)
+            for pid in qualified
+        ])
 
     # Z-score each stat across the qualified pool
     z_scored = {}
@@ -264,7 +286,8 @@ def build_interaction_matrix(
     reliable estimates. A player with 10 appearances would have super noisy
     averages, so we exclude them.
 
-    Diagonal: avg GAT score + beta*PSI + gamma*appearance_bonus
+    Diagonal: w_gat * norm_GAT + w_psi * norm_PSI + w_app * norm_App
+              (all components min-max normalised to [0,1] before weighting)
     Off-diagonal: avg hop-weighted pair score for (i, j)
     """
     # Filter to players with enough data
@@ -276,19 +299,36 @@ def build_interaction_matrix(
     if stats_cfg is not None:
         psi = compute_psi(acc, qualified, stats_cfg)
         app_bonus = compute_appearance_bonus(acc, qualified)
-        beta, gamma = stats_cfg.beta, stats_cfg.gamma
+        w_gat = stats_cfg.w_gat
+        w_psi = stats_cfg.w_psi
+        w_app = stats_cfg.w_app
     else:
         psi = {pid: 0.0 for pid in qualified}
         app_bonus = {pid: 0.0 for pid in qualified}
-        beta, gamma = 0.0, 0.0
+        w_gat, w_psi, w_app = 1.0, 0.0, 0.0
 
     matrix = np.zeros((n, n), dtype=np.float64)
 
-    # Fill diagonal: GAT average + individual stats + appearance bonus
-    for pid in qualified:
+    # Compute raw GAT averages
+    gat_raw = np.array([acc.diag_sum[pid] / acc.diag_count[pid] for pid in qualified])
+
+    # Min-max normalise GAT to [0, 1]
+    gat_min, gat_max = gat_raw.min(), gat_raw.max()
+    norm_gat = (gat_raw - gat_min) / (gat_max - gat_min) if gat_max > gat_min else np.zeros_like(gat_raw)
+
+    # Min-max normalise PSI to [0, 1]
+    psi_raw = np.array([psi.get(pid, 0.0) for pid in qualified])
+    psi_min, psi_max = psi_raw.min(), psi_raw.max()
+    norm_psi = (psi_raw - psi_min) / (psi_max - psi_min) if psi_max > psi_min else np.zeros_like(psi_raw)
+
+    # app_bonus is already [0, 1] — no normalisation needed
+
+    # Fill diagonal: weighted average of normalised components
+    for idx, pid in enumerate(qualified):
         i = pid_to_idx[pid]
-        gat_avg = acc.diag_sum[pid] / acc.diag_count[pid]
-        matrix[i, i] = gat_avg + beta * psi.get(pid, 0.0) + gamma * app_bonus.get(pid, 0.0)
+        matrix[i, i] = (w_gat * norm_gat[idx]
+                         + w_psi * norm_psi[idx]
+                         + w_app * app_bonus.get(pid, 0.0))
 
     # Fill off-diagonal: average pairwise synergy (symmetric)
     for (pi, pj), s in acc.score_sum.items():

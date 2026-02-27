@@ -154,7 +154,8 @@ def _print_result(
         return
 
     print(f"\n  ✓ OPTIMAL STARTING XI (synergy = {optimal.objective_value:.6f})")
-    print(f"  Formation: {config.squad.formation}\n")
+    counts = {grp: len(pids) for grp, pids in optimal.by_group.items() if pids}
+    print(f"  Composition: {counts}\n")
 
     for grp in config.squad.group_order:
         for pid in optimal.by_group.get(grp, []):
