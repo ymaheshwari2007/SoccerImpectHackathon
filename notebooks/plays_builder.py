@@ -165,8 +165,7 @@ def _(events_df):
                           'end_coordinates_x', 'end_coordinates_y',
                           'timestamp', 'success', 'ball_owning_team']].copy()
 
-
-    play_events_df
+    plays_df
     return
 
 
