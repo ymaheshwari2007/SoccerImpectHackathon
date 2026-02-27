@@ -46,14 +46,17 @@ def score_play(
 ) -> float:
     """Score a possession: how dangerous was it?
 
-    The score combines four things:
-      1. DISPLACEMENT: did the ball move closer to goal? (normalised to [-1, 1])
-      2. ADVANCEMENT: how deep into the opponent's half did it get? ([0, 1])
-      3. TIME DECAY: quick attacks score higher via sigmoid (a 3-second counter
-         attack is worth more than a 30-second sideways passing sequence)
-      4. END BONUS: flat reward/penalty for how the play ended (goal > shot > turnover)
+    Additive components squashed through tanh to [-1, 1]:
+      P = tanh(w_eff * efficiency + w_adv * advancement + w_dur * duration + end_bonus)
 
-    Final score = (displacement × advancement × sigmoid) + end_bonus
+    Components:
+      1. EFFICIENCY: displacement / time — how productively was possession used?
+      2. ADVANCEMENT [0, 1]: directional, 0 = own goal, 1 = opponent goal.
+      3. DURATION [0, 1]: logistic curve rewarding sustained possession.
+      4. END BONUS: flat reward/penalty for how the play ended.
+
+    tanh compresses the result to [-1, 1] so the GAT trains on bounded labels
+    and end_bonus doesn't dominate the score.
     """
     if len(play_clean) == 0:
         return 0.0
@@ -62,24 +65,28 @@ def score_play(
     x_s, y_s = float(first["coordinates_x"]), float(first["coordinates_y"])
     x_e, y_e = float(last["end_coordinates_x"]), float(last["end_coordinates_y"])
 
-    # How much closer to goal did the ball get? (normalised by max pitch distance)
+    # 1. Efficiency: displacement / time
     d_s = ((x_s - attacking_goal_x) ** 2 + y_s ** 2) ** 0.5
     d_e = ((x_e - attacking_goal_x) ** 2 + y_e ** 2) ** 0.5
     disp = min(1.0, (d_s - d_e) / field.max_field_dist)
-
-    # How far into the opponent's half? 0 = own goal, 1 = opponent goal
-    sign = 1.0 if attacking_goal_x > 0 else -1.0
-    adv = scoring.advancement_weight * max(0.0, min(1.0, x_e * sign / field.field_half))
-
-    # Sigmoid of play duration — clamped to prevent math.exp overflow
-    # (some plays have timestamps hundreds of seconds apart due to stoppages)
     t = float(last["timestamp_sec"] - first["timestamp_sec"])
-    exp_arg = max(-500.0, min(500.0, -(t - scoring.sigmoid_shift)))
-    sig = 1.0 / (1.0 + math.exp(exp_arg))
+    efficiency = disp / max(t, 1.0)
 
-    mult = disp * adv * sig
+    # 2. Advancement: directional [0, 1] — 0 = own goal, 1 = opponent goal
+    sign = 1.0 if attacking_goal_x > 0 else -1.0
+    adv = (x_e * sign + field.field_half) / field.field_length
+    adv = max(0.0, min(1.0, adv))
 
-    # What happened at the end of the play?
+    # 3. Duration: logistic curve [0, 1]
+    exp_arg = max(-500.0, min(500.0, -(t - scoring.time_midpoint)))
+    duration = 1.0 / (1.0 + math.exp(exp_arg))
+
+    # Additive combination
+    raw = (scoring.w_efficiency * efficiency
+           + scoring.w_advancement * adv
+           + scoring.w_duration * duration)
+
+    # 4. End-of-play event bonus
     lt = str(last["event_type"])
     lr = str(last["result"]).upper()
     if lt == "SHOT":
@@ -88,10 +95,14 @@ def score_play(
         bonus = scoring.out_of_bounds_penalty
     elif lt == "INTERCEPTION":
         bonus = scoring.intercept_penalty
+    elif lt == "DUEL" and "WON" not in lr:
+        bonus = scoring.tackle_penalty
+    elif "FOUL" in lt:
+        bonus = scoring.foul_penalty
     else:
         bonus = 0.0
 
-    return mult + bonus
+    return math.tanh(raw + bonus)
 
 
 def build_graph(

@@ -35,17 +35,25 @@ class FieldConfig:
 class ScoringConfig:
     """How we score each possession (the label our GAT learns to predict).
 
-    The score tries to capture "how dangerous was this possession?" by combining:
-    - How far did the ball move toward goal? (displacement × advancement)
-    - How long was the play? (sigmoid decay — quick attacks score higher)
-    - Did it end in a shot or goal? (bonus/penalty)
+    Additive components squashed through tanh to [-1, 1]:
+      P = tanh(w_eff * efficiency + w_adv * advancement + w_dur * duration + end_bonus)
+
+    Components:
+    - efficiency: displacement / time — how productively was possession used?
+    - advancement [0, 1]: directional (0 = own goal, 1 = opponent goal)
+    - duration [0, 1]: logistic curve rewarding sustained possession
+    - end_bonus: flat reward/penalty for how the play ended
     """
-    sigmoid_shift: float = 7.5          # plays shorter than ~7.5s get boosted
-    advancement_weight: float = 1.0     # weight for "how far into opponent half"
-    goal_bonus: float = 1.0             # flat bonus if the play ended in a goal
-    shot_bonus: float = 0.3             # smaller bonus for a shot (no goal)
-    out_of_bounds_penalty: float = -0.1   # lost possession out of bounds
-    intercept_penalty: float = -0.2       # opponent intercepted
+    w_efficiency: float = 3.0            # weight for efficiency (displacement / time)
+    w_advancement: float = 0.3           # weight for directional pitch position
+    w_duration: float = 0.2              # weight for sustained possession
+    time_midpoint: float = 5.0           # logistic midpoint (seconds)
+    goal_bonus: float = 1.0              # flat bonus if the play ended in a goal
+    shot_bonus: float = 0.3              # smaller bonus for a shot (no goal)
+    out_of_bounds_penalty: float = -0.1  # lost possession out of bounds
+    intercept_penalty: float = -0.2      # opponent intercepted
+    tackle_penalty: float = -0.1         # lost possession to a tackle
+    foul_penalty: float = -0.05          # committed a foul (mild — sometimes tactical)
 
 
 @dataclass(frozen=True)
