@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore")
 
 def main():
     parser = argparse.ArgumentParser(description="GAT → Synergy → MILP pipeline")
-    parser.add_argument("--max-matches", type=int, default=None,
+    parser.add_argument("-max-matches", type=int, default=None,
                         help="Limit number of matches (default: all)")
     parser.add_argument("--min-appearances", type=int, default=150,
                         help="Minimum player appearances to qualify (default: 150)")
