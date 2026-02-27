@@ -208,6 +208,7 @@ def build_graph(
             "event_type": str(r["event_type"]),
             "result": str(r["result"]),
             "success": bool(r["success"]),
+            "coord_x": float(r["coordinates_x"]),
             "end_x": float(r["end_coordinates_x"]),
             "goalkeeper_type": str(r.get("goalkeeper_type", "NONE")),
         }

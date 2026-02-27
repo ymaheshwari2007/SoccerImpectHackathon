@@ -1,8 +1,6 @@
 """
 Entry point: run the full GAT → synergy → optimal XI pipeline.
-
-Edit the settings below to change team, formation, training, etc.
-Then just run: python run_all_matches.py
+Edit the settings below, then run: python run_all_matches.py
 """
 import warnings
 
@@ -13,32 +11,43 @@ warnings.filterwarnings("ignore")
 
 # ─── SETTINGS (edit these) ───────────────────────────────────────────
 TEAM_NAME       = "FC Bayern München"
-MAX_MATCHES     = None    # None = use all available matches
 EPOCHS          = 50
 MIN_APPEARANCES = 150
 
-# Formation — must add up to 10 (+ 1 GK = 11)
-ATTACKERS   = 5
-MIDFIELDERS = 1
-DEFENDERS   = 4
+# Formation — set to None for auto (synergy-driven, soft bounds)
+#           — or set ATK, MID, DEF counts (must add up to 10, +1 GK = 11)
+ATTACKERS   = None   # e.g. 3
+MIDFIELDERS = None   # e.g. 4
+DEFENDERS   = None   # e.g. 3
 # ─────────────────────────────────────────────────────────────────────
 
 
 def main():
-    formation = {
-        "Attacker": ATTACKERS,
-        "Midfielder": MIDFIELDERS,
-        "Defender": DEFENDERS,
-        "Goalkeeper": 1,
-    }
-    total = sum(formation.values())
-    assert total == 11, f"Formation must add up to 11, got {total}"
+    use_fixed = all(v is not None for v in [ATTACKERS, MIDFIELDERS, DEFENDERS])
+
+    squad_kwargs = {"min_appearances": MIN_APPEARANCES}
+
+    if use_fixed:
+        formation = {
+            "Attacker": ATTACKERS,
+            "Midfielder": MIDFIELDERS,
+            "Defender": DEFENDERS,
+            "Goalkeeper": 1,
+        }
+        total = sum(formation.values())
+        assert total == 11, f"Formation must add up to 11, got {total}"
+        squad_kwargs["formation"] = formation
+        squad_kwargs["use_fixed_formation"] = True
+        print(f"Team: {TEAM_NAME}")
+        print(f"Formation: {ATTACKERS}-{MIDFIELDERS}-{DEFENDERS} (+ 1 GK)\n")
+    else:
+        print(f"Team: {TEAM_NAME}")
+        print(f"Formation: auto (synergy-driven, soft bounds)\n")
 
     config = PipelineConfig(
         team_name=TEAM_NAME,
-        max_matches=MAX_MATCHES,
         training=TrainingConfig(n_epochs=EPOCHS),
-        squad=SquadConfig(min_appearances=MIN_APPEARANCES, formation=formation),
+        squad=SquadConfig(**squad_kwargs),
     )
 
     run_pipeline(config)
