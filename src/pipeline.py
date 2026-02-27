@@ -108,7 +108,7 @@ def run_pipeline(
         print("=" * 70)
 
     interaction = build_interaction_matrix(
-        accumulator, config.squad.min_appearances, config.stats,
+        accumulator, config.squad.min_appearances,
     )
     if verbose:
         n = len(interaction.player_ids)

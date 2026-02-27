@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from torch_geometric.data import Data
 
 from ..config import PipelineConfig
-from ..data.fetch import MatchContext, extract_match_context, load_match_events
+from ..data.fetch import MatchContext, attach_sub_log, extract_match_context, load_match_events
 from ..data.possession import segment_possessions
 from ..data.preprocess import (
     GlobalEncoders,
@@ -75,6 +75,7 @@ def build_all_match_graphs(
             continue
 
         df = fill_nan_columns(events_df)
+        ctx = attach_sub_log(ctx, df)
         raw_data.append((mid, dataset, ctx, df))
 
     if verbose:

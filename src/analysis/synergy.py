@@ -6,27 +6,26 @@ played well together?" The GAT only scores possessions (whole sequences),
 so we attribute that score to every pair of players who appeared in the same
 possession.
 
-Think of it like movie credits — if a movie is great, everyone in it gets
-credit. But a player who appeared in one scene (1-hop edge) gets more credit
-than someone who was loosely connected (synthetic skip-edge).
+The interaction matrix uses involvement-weighted averages:
+  - Diagonal [i,i]: diag_sum[pid] / field_plays[pid]
+      = avg score in plays pid touched the ball
+        × P(pid touched the ball in a play | pid was on the field)
+  - Off-diagonal [i,j]: score_sum[(pi,pj)] / field_pairs[(pi,pj)]
+      = avg hop-weighted score when pi–pj had an edge
+        × P(pi–pj edge existed in a play | both were on the field)
 
-The end product is an N×N interaction matrix where:
-  - Diagonal [i,i]: average score when player i participated
-  - Off-diagonal [i,j]: average score when players i and j appeared together,
-    weighted by how directly they interacted (edge hop weight)
+This penalises passengers and rewards players who are genuinely involved.
 """
 from __future__ import annotations
 
-import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 from torch_geometric.data import Data
 
-from ..config import IndividualStatsConfig
-from ..data.fetch import MatchContext
+from ..data.fetch import MatchContext, get_lineup_at_time
 
 
 @dataclass
@@ -37,30 +36,28 @@ class SynergyAccumulator:
     This is mutable — each match adds to the running totals.
     """
     # Off-diagonal: how well did each pair play together?
-    score_sum: dict = field(default_factory=lambda: defaultdict(float))   # (pid_a, pid_b) → sum of scores
-    pair_count: dict = field(default_factory=lambda: defaultdict(float))  # (pid_a, pid_b) → number of co-appearances
+    score_sum: dict = field(default_factory=lambda: defaultdict(float))   # (pid_a, pid_b) → sum of hop-weighted scores
+    pair_count: dict = field(default_factory=lambda: defaultdict(float))  # (pid_a, pid_b) → number of co-edge plays
 
     # Diagonal: how well did each player play individually?
-    diag_sum: dict = field(default_factory=lambda: defaultdict(float))    # pid → sum of scores
-    diag_count: dict = field(default_factory=lambda: defaultdict(float))  # pid → number of possessions
+    diag_sum: dict = field(default_factory=lambda: defaultdict(float))    # pid → sum of scores when pid touched ball
+    diag_count: dict = field(default_factory=lambda: defaultdict(float))  # pid → number of own-team possessions pid appeared in
 
     # Player metadata (accumulated across matches)
     player_names: dict[str, str] = field(default_factory=dict)
     player_positions: dict[str, str] = field(default_factory=dict)
     player_groups: dict[str, str] = field(default_factory=dict)
 
-    # Individual stats — raw event counts per player (goals, shots, tackles, etc)
-    player_stats: dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
-    # How many plays each player appeared in (for appearance bonus)
-    player_appearances: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Lineup-based denominators (incremented for every possession, both teams)
+    field_plays: dict = field(default_factory=lambda: defaultdict(int))
+    # pid → total possessions while pid was on the field
+
+    field_pairs: dict = field(default_factory=lambda: defaultdict(int))
+    # (min_pid, max_pid) → total possessions while BOTH were on the field
 
 
 def merge_match_context(acc: SynergyAccumulator, ctx: MatchContext) -> None:
-    """Pull player names/positions from a match into the accumulator.
-
-    Later matches overwrite earlier ones — that's fine because a player's
-    name doesn't change, and we want the most recent position if it updated.
-    """
+    """Pull player names/positions from a match into the accumulator."""
     acc.player_names.update(ctx.player_names)
     acc.player_positions.update(ctx.player_positions)
     acc.player_groups.update(ctx.player_groups)
@@ -74,91 +71,54 @@ def accumulate_match_synergy(
 ) -> None:
     """Add one match's worth of synergy data to the running totals.
 
-    Only looks at possessions by the target team (we don't care how well
-    the opponent's players synergise). Also filters to roster players only —
-    opponent players appear in duel events and we don't want them polluting
-    the matrix.
+    For every possession (both teams):
+      1. Get the target team's lineup at that moment
+      2. Increment field_plays for each roster player in the lineup
+      3. Increment field_pairs for each pair of roster players in the lineup
 
-    For each possession:
-      - Every roster player who touched the ball gets diagonal credit
-      - Every PAIR of roster players connected by an edge gets off-diagonal
-        credit, weighted by hop distance (direct pass = weight 1.0,
-        synthetic 2-hop = weight from edge attribute)
+    For own-team possessions only:
+      4. Increment diag_sum/diag_count for each player who touched the ball
+      5. Increment score_sum/pair_count for each edge-connected player pair
     """
     roster = ctx.roster
     target_tid = ctx.target_team_id
 
     for g, ps in zip(graphs, predictions):
-        is_own_possession = (g.team_id == target_tid)
+        # ── Lineup-based field_plays and field_pairs (both teams' possessions) ──
+        lineup = get_lineup_at_time(ctx, target_tid, g.period_id, g.t_start)
+        on_field = [pid for pid in lineup if pid in roster]
 
-        # Tally individual event stats from ALL possessions (both teams)
-        # because defensive stats (saves, interceptions, blocks) happen during
-        # opponent possessions — if we only count own-team possessions, goalkeepers
-        # get zero saves and defenders get almost no interceptions.
-        if hasattr(g, "event_data"):
-            for ev in g.event_data:
-                pid = ev["player_id"]
-                if pid == "UNKNOWN" or pid not in roster:
-                    continue
-                etype = ev["event_type"]
-                result = ev["result"].upper()
-                success = ev["success"]
+        for pid in on_field:
+            acc.field_plays[pid] += 1
 
-                if etype == "SHOT":
-                    acc.player_stats[pid]["total_shots"] += 1
-                    if "GOAL" in result:
-                        acc.player_stats[pid]["goals"] += 1
-                        acc.player_stats[pid]["shots_on_target"] += 1
-                    elif "SAVED" in result:
-                        acc.player_stats[pid]["shots_on_target"] += 1
-                elif etype == "PASS":
-                    if success:
-                        acc.player_stats[pid]["successful_passes"] += 1
-                    if success and ev["end_x"] > 35.0:
-                        acc.player_stats[pid]["key_passes"] += 1
-                elif etype == "DUEL" and result == "WON":
-                    acc.player_stats[pid]["successful_duels"] += 1
-                elif etype == "INTERCEPTION":
-                    acc.player_stats[pid]["interceptions"] += 1
-                elif etype == "CLEARANCE":
-                    acc.player_stats[pid]["clearances"] += 1
-                elif "BLOCK" in etype:
-                    acc.player_stats[pid]["blocks"] += 1
-                elif etype == "RECOVERY":
-                    acc.player_stats[pid]["recoveries"] += 1
-                elif etype == "GOALKEEPER":
-                    gk_type = str(ev.get("goalkeeper_type", "NONE")).upper()
-                    if gk_type == "SAVE":
-                        acc.player_stats[pid]["saves"] += 1
+        for i in range(len(on_field)):
+            for j in range(i + 1, len(on_field)):
+                pair = (min(on_field[i], on_field[j]), max(on_field[i], on_field[j]))
+                acc.field_pairs[pair] += 1
 
-        # Synergy scoring only for own-team possessions
-        if not is_own_possession:
+        # ── Synergy scoring only for own-team possessions ──
+        if g.team_id != target_tid:
             continue
 
-        # Diagonal: every roster player in this possession gets credit
-        unique_pids = {p for p in g.player_ids if p != "UNKNOWN" and p in roster}
+        # Diagonal: every roster player who touched the ball gets credit
+        unique_pids = {p for p in g.player_ids if p != "UNKNOWN" and p not in ("TERMINAL",) and p in roster}
         for pid in unique_pids:
             acc.diag_sum[pid] += ps
             acc.diag_count[pid] += 1.0
-            acc.player_appearances[pid] += 1
 
-        # Off-diagonal: find pairs of roster players connected by edges
-        # Use the max weight per pair (a pair might share multiple edges)
+        # Off-diagonal: roster player pairs connected by graph edges
+        # Use max hop weight per pair (a pair may share multiple edges)
         pair_w: dict[tuple[str, str], float] = {}
         for e in range(g.edge_index.shape[1]):
             sp = g.player_ids[g.edge_index[0, e].item()]
             dp = g.player_ids[g.edge_index[1, e].item()]
 
-            # Skip self-loops, unknowns, and opponent players
-            if sp == "UNKNOWN" or dp == "UNKNOWN" or sp == dp:
+            if sp in ("UNKNOWN", "TERMINAL") or dp in ("UNKNOWN", "TERMINAL") or sp == dp:
                 continue
             if sp not in roster or dp not in roster:
                 continue
 
-            # Canonical pair ordering so (A,B) and (B,A) map to the same entry
             pair = (min(sp, dp), max(sp, dp))
-
-            # Weight: 1.0 for real edges (type=1.0), otherwise use the distance feature
             w = 1.0 if g.edge_attr[e, 0].item() == 1.0 else g.edge_attr[e, 4].item()
             pair_w[pair] = max(pair_w.get(pair, 0.0), w)
 
@@ -171,8 +131,8 @@ def accumulate_match_synergy(
 class InteractionMatrix:
     """The N×N synergy matrix — this is what the MILP optimizer uses.
 
-    matrix[i,j] tells you: on average, how good were possessions where
-    players i and j both appeared? Higher = better synergy.
+    matrix[i,i] = diag_sum / field_plays  (individual involvement-weighted score)
+    matrix[i,j] = score_sum / field_pairs (pairwise involvement-weighted score)
     """
     matrix: np.ndarray
     player_ids: list[str]
@@ -180,123 +140,38 @@ class InteractionMatrix:
     dataframe: pd.DataFrame       # same data but with player names as row/col labels
 
 
-def compute_psi(
-    acc: SynergyAccumulator,
-    qualified: list[str],
-    stats_cfg: IndividualStatsConfig,
-) -> dict[str, float]:
-    """Position-Specific Skill Index for each qualified player.
-
-    The idea: a striker's value comes from goals and shots on target,
-    a defender's from tackles and interceptions. We z-score normalise
-    each stat within the qualified pool, then dot-product with the
-    position-group-specific weights. This gives one number per player
-    that says "how good are they at what their position is supposed to do?"
-    """
-    weight_map = {
-        "Attacker": stats_cfg.attacker_weights,
-        "Midfielder": stats_cfg.midfielder_weights,
-        "Defender": stats_cfg.defender_weights,
-        "Goalkeeper": stats_cfg.goalkeeper_weights,
-    }
-
-    # Collect all stat names used across any position group
-    all_stat_names = set()
-    for w in weight_map.values():
-        all_stat_names.update(w.keys())
-
-    # Build raw stat vectors: {stat_name: [value_for_player_0, value_for_player_1, ...]}
-    raw = {s: np.array([float(acc.player_stats[pid].get(s, 0)) for pid in qualified])
-           for s in all_stat_names}
-
-    # Z-score each stat across the qualified pool
-    z_scored = {}
-    for s, vals in raw.items():
-        mu, sigma = vals.mean(), vals.std()
-        z_scored[s] = (vals - mu) / sigma if sigma > 0 else np.zeros_like(vals)
-
-    # Dot-product with position-group weights to get PSI per player
-    psi = {}
-    for idx, pid in enumerate(qualified):
-        group = acc.player_groups.get(pid, "Midfielder")  # default to mid if unknown
-
-        # Goalkeepers get a special PSI: save rate (saves / appearances)
-        # Z-scoring saves across 20 outfielders + 2 GKs is meaningless —
-        # just directly measure how many saves per appearance the GK makes.
-        if group == "Goalkeeper":
-            saves = float(acc.player_stats[pid].get("saves", 0))
-            apps = float(acc.player_appearances.get(pid, 1))
-            save_rate = saves / max(apps, 1.0)
-            # Scale so it's comparable to outfielder PSI range
-            psi[pid] = save_rate * 10.0
-        else:
-            weights = weight_map.get(group, stats_cfg.midfielder_weights)
-            score = sum(weights.get(s, 0.0) * z_scored[s][idx] for s in weights)
-            psi[pid] = score
-
-    return psi
-
-
-def compute_appearance_bonus(
-    acc: SynergyAccumulator,
-    qualified: list[str],
-) -> dict[str, float]:
-    """Logarithmic appearance bonus — rewards players who actually play regularly.
-
-    Uses log(1 + appearances) so the first 100 appearances matter a lot more
-    than going from 400 to 500. Normalised to [0, 1] range.
-    """
-    raw = {pid: math.log(1 + acc.player_appearances.get(pid, 0)) for pid in qualified}
-    max_val = max(raw.values()) if raw else 1.0
-    if max_val == 0:
-        max_val = 1.0
-    return {pid: v / max_val for pid, v in raw.items()}
-
-
 def build_interaction_matrix(
     acc: SynergyAccumulator,
     min_appearances: int = 150,
-    stats_cfg: IndividualStatsConfig | None = None,
 ) -> InteractionMatrix:
     """Build the final N×N matrix from accumulated synergy stats.
 
-    Only includes players with enough appearances (min_appearances) to get
-    reliable estimates. A player with 10 appearances would have super noisy
-    averages, so we exclude them.
+    Only includes players with at least min_appearances possessions where they
+    actually touched the ball (diag_count threshold).
 
-    Diagonal: avg GAT score + beta*PSI + gamma*appearance_bonus
-    Off-diagonal: avg hop-weighted pair score for (i, j)
+    Diagonal: diag_sum[pid] / field_plays[pid]
+    Off-diagonal: score_sum[(pi,pj)] / field_pairs[(pi,pj)]
     """
-    # Filter to players with enough data
     qualified = sorted(pid for pid, c in acc.diag_count.items() if c >= min_appearances)
     n = len(qualified)
     pid_to_idx = {pid: i for i, pid in enumerate(qualified)}
 
-    # Compute individual stat bonuses if config provided
-    if stats_cfg is not None:
-        psi = compute_psi(acc, qualified, stats_cfg)
-        app_bonus = compute_appearance_bonus(acc, qualified)
-        beta, gamma = stats_cfg.beta, stats_cfg.gamma
-    else:
-        psi = {pid: 0.0 for pid in qualified}
-        app_bonus = {pid: 0.0 for pid in qualified}
-        beta, gamma = 0.0, 0.0
-
     matrix = np.zeros((n, n), dtype=np.float64)
 
-    # Fill diagonal: GAT average + individual stats + appearance bonus
+    # Diagonal: involvement-weighted average GAT score
     for pid in qualified:
         i = pid_to_idx[pid]
-        gat_avg = acc.diag_sum[pid] / acc.diag_count[pid]
-        matrix[i, i] = gat_avg + beta * psi.get(pid, 0.0) + gamma * app_bonus.get(pid, 0.0)
+        fp = acc.field_plays.get(pid, 0)
+        matrix[i, i] = acc.diag_sum[pid] / fp if fp > 0 else 0.0
 
-    # Fill off-diagonal: average pairwise synergy (symmetric)
+    # Off-diagonal: pair involvement-weighted average hop score (symmetric)
     for (pi, pj), s in acc.score_sum.items():
         if pi in pid_to_idx and pj in pid_to_idx:
             i, j = pid_to_idx[pi], pid_to_idx[pj]
-            c = acc.pair_count[(pi, pj)]
-            matrix[i, j] = s / c
-            matrix[j, i] = s / c
+            fp = acc.field_pairs.get((pi, pj), 0)
+            val = s / fp if fp > 0 else 0.0
+            matrix[i, j] = val
+            matrix[j, i] = val
 
     names = [acc.player_names.get(pid, pid) for pid in qualified]
     df = pd.DataFrame(matrix, index=names, columns=names)

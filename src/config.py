@@ -140,39 +140,6 @@ class SquadConfig:
 
 
 @dataclass(frozen=True)
-class IndividualStatsConfig:
-    """Controls how much individual skill stats and appearance count affect selection.
-
-    The final diagonal becomes: GAT_avg + beta * PSI + gamma * appearance_bonus
-    where PSI = position-specific skill index (z-score normalised stats weighted
-    by what matters for each role).
-
-    beta and gamma are intentionally small — synergy/progression is still king,
-    these just make sure genuinely skilled players don't get overlooked.
-    """
-    beta: float = 0.50           # ~30% relative weight for individual stats
-    gamma: float = 0.17          # ~10% relative weight for appearances
-    min_appearances: int = 150   # need this many plays to qualify for stats
-
-    # Position-specific stat weights — which stats matter for which role
-    attacker_weights: dict = field(default_factory=lambda: {
-        "goals": 0.40, "shots_on_target": 0.25, "total_shots": 0.10,
-        "successful_passes": 0.10, "successful_duels": 0.15,
-    })
-    midfielder_weights: dict = field(default_factory=lambda: {
-        "successful_passes": 0.20, "key_passes": 0.30, "interceptions": 0.15,
-        "successful_duels": 0.20, "recoveries": 0.15,
-    })
-    defender_weights: dict = field(default_factory=lambda: {
-        "interceptions": 0.25, "clearances": 0.20, "blocks": 0.20,
-        "successful_duels": 0.20, "recoveries": 0.15,
-    })
-    goalkeeper_weights: dict = field(default_factory=lambda: {
-        "saves": 0.80, "successful_passes": 0.20,
-    })
-
-
-@dataclass(frozen=True)
 class PipelineConfig:
     """Top-level config — this is what you pass to run_pipeline().
 
@@ -188,4 +155,3 @@ class PipelineConfig:
     graph: GraphConfig = field(default_factory=GraphConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     squad: SquadConfig = field(default_factory=SquadConfig)
-    stats: IndividualStatsConfig = field(default_factory=IndividualStatsConfig)

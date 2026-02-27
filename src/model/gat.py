@@ -26,7 +26,7 @@ from torch_geometric.nn import GATConv, global_mean_pool
 class PlayGAT(nn.Module):
     """Two-layer GAT that predicts a scalar play score from a possession graph."""
 
-    NODE_DIM = 6   # features per node (player_id_enc, x, y, event_type_enc, t_rel, pressure)
+    NODE_DIM = 7   # features per node (player_id_enc, x, y, event_type_enc, t_rel, pressure, outcome_type)
     EDGE_DIM = 7   # features per edge (type, pass_type, end_x, end_y, dist, result, success)
 
     def __init__(self, hidden: int = 32, heads: int = 4, dropout: float = 0.3):

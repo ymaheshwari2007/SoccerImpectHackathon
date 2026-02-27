@@ -131,8 +131,19 @@ def build_graph(
 
     t0 = pc["timestamp_sec"].iloc[0]
 
-    # Build node features
-    # Each row in the possession becomes a node
+    # Determine outcome code from the last event (used for the terminal node)
+    last = pc.iloc[-1]
+    lt = str(last["event_type"])
+    lr = str(last["result"]).upper()
+    if lt == "SHOT" and "GOAL" in lr:
+        outcome_code = 1.0   # GOAL
+    elif "OUT" in lr:
+        outcome_code = 3.0   # OUT OF BOUNDS
+    else:
+        outcome_code = 2.0   # ENEMY (interception, saved shot, turnover)
+
+    # Build node features (7 per node)
+    # Feature 7 (outcome_type): 0.0 for regular nodes, outcome_code for terminal node
     feats = []
     for _, r in pc.iterrows():
         feats.append([
@@ -142,8 +153,8 @@ def build_graph(
             float(r["event_type_enc"]),
             float(r["timestamp_sec"] - t0),      # time relative to start of play
             float(r["is_under_pressure"]),
+            0.0,                                  # outcome_type: 0 = regular node
         ])
-    x = torch.tensor(feats, dtype=torch.float)
 
     # Build edges
     # Real edges: event i → event i+1 (the natural sequence)
@@ -169,6 +180,22 @@ def build_graph(
                 src.append(i); dst.append(i + k)
                 attrs.append([SYNTH, 0.0, 0.0, 0.0, 1.0 / k, 0.0, 0.0])
 
+    # Terminal outcome node: one extra node appended at index n
+    # Features: [0, end_x, end_y, 0, t_end_relative, 0, outcome_code]
+    end_x = float(last["end_coordinates_x"])
+    end_y = float(last["end_coordinates_y"])
+    last_x = float(last["coordinates_x"])
+    last_y = float(last["coordinates_y"])
+    t_end_rel = float(last["timestamp_sec"] - t0)
+    feats.append([0.0, end_x, end_y, 0.0, t_end_rel, 0.0, outcome_code])
+
+    # Edge from last player node (n-1) to terminal node (n), edge_type=3.0
+    term_dist = ((end_x - last_x) ** 2 + (end_y - last_y) ** 2) ** 0.5
+    src.append(n - 1)
+    dst.append(n)
+    attrs.append([3.0, 0.0, end_x, end_y, term_dist, 0.0, float(outcome_code == 1.0)])
+
+    x = torch.tensor(feats, dtype=torch.float)
     ei = torch.tensor([src, dst], dtype=torch.long)
     ea = torch.tensor(attrs, dtype=torch.float)
 
@@ -183,7 +210,7 @@ def build_graph(
     g = Data(x=x, edge_index=ei, edge_attr=ea, y=y)
 
     # Attach metadata for the synergy stage (not used by the GAT itself)
-    g.player_ids = pc["player_id"].tolist()
+    g.player_ids = pc["player_id"].tolist() + ["TERMINAL"]
     g.team_id = str(pc.iloc[0]["team_id"])
     g.period_id = int(pc.iloc[0]["period_id"])
     g.t_start = float(pc.iloc[0]["timestamp_sec"])
